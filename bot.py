@@ -16,6 +16,13 @@ ADMIN_IDS = [6779617599, 8691909482]
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# Clear any active webhooks to prevent 409 Conflict error
+try:
+    bot.remove_webhook()
+    print("🗑️ Existing webhooks cleared successfully.")
+except Exception as e:
+    print(f"⚠️ Webhook remove warning: {e}")
+
 # User တစ်ယောက်ချင်းစီရဲ့ Session URL ကို ယာယီမှတ်ထားရန် memory dict
 user_sessions = {}
 
@@ -27,7 +34,6 @@ def home():
     return "🤖 Telegram Bot is active and running!"
 
 def run_flask():
-    # Render assigns port via environment variable PORT, default to 8080 if not present
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -208,7 +214,7 @@ def process_voucher_step(message):
     # Step 2: Login Voucher
     active_session_id, error = login_voucher(session_id, voucher)
     if not active_session_id:
-        tg_res = f"📊 *VOUCHER RESULT*\n\n🎫 *Voucher:* `{voucher}`\n📊 *Status:* ❌ Invalid သို့မဟုတ် Expired ဖြစ်နေပါသည်။\n\n🔄 နောက်ထပ်စစ်ချင်သော *Voucher Code* ကို ထပ်မံ ပို့ပေးနိုင်ပါတယ်ဗျာ።\n(ရပ်တန့်လိုပါက `/stop` ကို ရိုက်ပါ)"
+        tg_res = f"📊 *VOUCHER RESULT*\n\n🎫 *Voucher:* `{voucher}`\n📊 *Status:* ❌ Invalid သို့မဟုတ် Expired ဖြစ်နေပါသည်။\n\n🔄 နောက်ထပ်စစ်ချင်သော *Voucher Code* ကို ထပ်မံ ပို့ပေးနိုင်ပါတယ်ဗျာ။\n(ရပ်တန့်လိုပါက `/stop` ကို ရိုက်ပါ)"
         msg = bot.edit_message_text(tg_res, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_voucher_step)
         return
