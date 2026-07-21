@@ -3,6 +3,7 @@ import requests
 import base64
 import json
 import os
+import time
 import threading
 from flask import Flask
 import telebot
@@ -23,15 +24,12 @@ try:
 except Exception as e:
     print(f"⚠️ Webhook remove warning: {e}")
 
-# User တစ်ယောက်ချင်းစီရဲ့ Session URL ကို ယာယီမှတ်ထားရန် memory dict
-user_sessions = {}
-
 # ---- Flask Server for UptimeRobot Keep-Alive ----
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "🤖 Telegram Bot is active and running!"
+    return "🤖 KYAW ZIN Telegram Bot is active and running!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -42,20 +40,32 @@ def keep_alive():
     t.start()
 # --------------------------------------------------
 
+# User တစ်ယောက်ချင်းစီရဲ့ Session URL ကို ယာယီမှတ်ထားရန် memory dict
+user_sessions = {}
+
 def is_admin(chat_id):
     return chat_id in ADMIN_IDS
 
 def get_session_id(session_url):
     headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'accept-language': 'en-US,en;q=0.9',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
     }
     try:
-        response = requests.get(session_url, headers=headers, timeout=10)
-        session_id = re.search(r"[?&]sessionId=([a-zA-Z0-9]+)", response.url).group(1)
-        return session_id
-    except:
+        response = requests.get(session_url, headers=headers, timeout=10, allow_redirects=True)
+        match = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", response.url)
+        if match: return match.group(1)
+        
+        match_orig = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", session_url)
+        if match_orig: return match_orig.group(1)
+            
+        match_text = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", response.text)
+        if match_text: return match_text.group(1)
+            
+        return None
+    except Exception as e:
+        print(f"Error getting session ID: {e}")
         return None
 
 def login_voucher(session_id, voucher):
@@ -68,10 +78,17 @@ def login_voucher(session_id, voucher):
     try:
         with requests.post(post_url, json=data, headers=headers, timeout=10) as response:
             res_text = response.text
-            token_match = re.search('token=(.*?)&', res_text)
+            token_match = re.search(r'token=(.*?)&', res_text)
             if token_match:
                 return token_match.group(1), None
             else:
+                try:
+                    res_json = response.json()
+                    if 'result' in res_json and isinstance(res_json['result'], dict):
+                        token = res_json['result'].get('token') or res_json['result'].get('sessionId')
+                        if token: return token, None
+                except:
+                    pass
                 return None, res_text
     except Exception as Error:
         return None, str(Error)
@@ -93,8 +110,11 @@ def get_balance(active_session_id):
 
 def format_time(minutes):
     if minutes is None or minutes == 0: return "N/A"
-    minutes = int(minutes)
-    if minutes <= 0: return "⛔ Expired"
+    try:
+        minutes = int(minutes)
+    except:
+        return str(minutes)
+    if minutes <= 0: return "⛔ <b>Expired</b>"
     days = minutes // 1440
     hours = (minutes % 1440) // 60
     mins = minutes % 60
@@ -104,57 +124,103 @@ def format_time(minutes):
     if mins > 0: parts.append(f"{mins}m")
     return " ".join(parts) if parts else "0m"
 
-# ---- Bot Handlers ----
-
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if not is_admin(message.chat.id):
-        bot.reply_to(message, "❌ သင်သည် Admin မဟုတ်သဖြင့် ဤ Bot ကို သုံးခွင့်မရှိပါ။")
+        bot.reply_to(message, "❌ <b>ACCESS DENIED:</b> သင်သည် System Admin မဟုတ်ပါ။")
         return
     
     welcome_text = (
-        "👋 *Voucher Time Checker Bot မှ ကြိုဆိုပါတယ်ဗျာ*\n\n"
-        "အဆင့် (၁) - ကျေးဇူးပြု၍ မိမိရဲ့ *WiFi Session URL* ကို ပို့ပေးပါဦး။\n\n"
-        "💡 အသုံးပြုပုံလမ်းညွှန်ကို သိလိုပါက `/help` ကို နှိပ်ပါ။\n"
-        "🛑 လက်ရှိလုပ်ဆောင်ချက်ကို ရပ်တန့်လိုပါက `/stop` ကို နှိပ်ပါ။"
+        "👑 <b>KYAW ZIN v2.0 PRO - CONTROL PANEL</b> 👑\n"
+        "──────────────────────────────\n"
+        "⚡ <b>Owner:</b> <code>KYAW ZIN</code>\n"
+        "📱 <b>Telegram:</b> <code>@kyawzin114800</code>\n"
+        "──────────────────────────────\n\n"
+        "📥 <b>STEP 1:</b> ကျေးဇူးပြု၍ မိမိရဲ့ <b>WiFi Session URL</b> (သို့မဟုတ် Portal Link) ကို ပို့ပေးပါဗျ။\n\n"
+        "💡 <i>အကူအညီလိုပါက /help ကိုနှိပ်ပါ။</i>\n"
+        "🛑 <i>လုပ်ဆောင်ချက်ရပ်ရန် /stop ကိုနှိပ်ပါ။</i>"
     )
-    msg = bot.reply_to(message, welcome_text, parse_mode="Markdown")
+    
+    markup = telebot.types.InlineKeyboardMarkup()
+    btn_start = telebot.types.InlineKeyboardButton("🚀 စတင်ရန် (/start)", callback_data="cmd_start")
+    btn_help = telebot.types.InlineKeyboardButton("📖 လမ်းညွှန် (/help)", callback_data="cmd_help")
+    btn_stop = telebot.types.InlineKeyboardButton("🛑 ရပ်တန့်ရန် (/stop)", callback_data="cmd_stop")
+    markup.add(btn_start, btn_help)
+    markup.add(btn_stop)
+
+    msg = bot.reply_to(message, welcome_text, parse_mode="HTML", reply_markup=markup)
     bot.register_next_step_handler(msg, process_url_step)
 
 @bot.message_handler(commands=['help'])
 def send_help(message):
     if not is_admin(message.chat.id):
-        bot.reply_to(message, "❌ သင်သည် Admin မဟုတ်ပါ။")
+        bot.reply_to(message, "❌ <b>ACCESS DENIED</b>")
         return
 
     help_text = (
-        "📖 *Bot အသုံးပြုနည်း လမ်းညွှန်ချက်*\n"
-        "───────────────────\n"
-        "ဒီ Bot ကို အဆင့် (၂) ဆင့်နဲ့ လွယ်ကူစွာ အသုံးပြုနိုင်ပါတယ်-\n\n"
-        "1️⃣ *အဆင့် (၁) - URL ပို့ခြင်း*\n"
-        "   • ပထမဆုံး `/start` ကို နှိပ်ပါ။\n"
-        "   • Bot က တောင်းဆိုတဲ့အခါ မိမိရဲ့ WiFi Captive Portal ရဲ့ **Session URL** (Link) ကို ပို့ပေးပါ။\n\n"
-        "2️⃣ *အဆင့် (၂) - Voucher စစ်ခြင်း*\n"
-        "   • URL အောင်မြင်စွာ ရရှိပြီးနောက် စစ်ဆေးလိုသော **Voucher Code** ကို ပို့ပေးပါ။\n"
-        "   • Bot မှ Voucher ရဲ့ သက်တမ်းနှင့် အချက်အလက်များကို ပြသပေးပါလိမ့်မည်။\n"
-        "   • ၎င်းနောက် URL ထပ်ပို့စရာမလိုဘဲ အခြား Voucher Code များကို **ဆက်တိုက်** ပို့ပြီး စစ်ဆေးနိုင်ပါသည်။\n\n"
-        "📌 *သတိပြုရန်*\n"
-        "   • URL အသစ်ပြောင်းလဲလိုပါက `/start` ကို ပြန်နှိပ်ပြီး အစမှ ပြန်လုပ်ပါ။\n"
-        "   • ဘာပဲလုပ်နေနေ လုပ်လက်စကို ရပ်ချင်ရင် `/stop` ကို ရိုက်ထည့်နိုင်ပါတယ်။\n"
-        "───────────────────\n"
-        "⚙️ *ရနိုင်သော Commands များ-*\n"
-        "• `/start` - Bot ကို စတင်ရန်/URL အသစ်ထည့်ရန်\n"
-        "• `/help` - အသုံးပြုပုံလမ်းညွှန် ကြည့်ရန်\n"
-        "• `/stop` - လုပ်ဆောင်ချက်အားလုံးကို ရပ်တန့်ရန်"
+        "📖 <b>KYAW ZIN BOT - SYSTEM GUIDE</b> 📖\n"
+        "══════════════════════════════\n"
+        "ဒီ Bot ကို အဆင့် (၂) ဆင့်နဲ့ အလွယ်ဆုံး သုံးနိုင်ပါတယ်-\n\n"
+        "1️⃣ <b>STEP 1 (URL ပို့ရန်):</b>\n"
+        "   • `/start` ကိုနှိပ်ပြီး WiFi Captive Portal ရဲ့ <b>URL</b> ကို ပို့ပါ။\n\n"
+        "2️⃣ <b>STEP 2 (Voucher စစ်ရန်):</b>\n"
+        "   • URL အောင်မြင်သွားရင် **Voucher Code** တွေကို ဆက်တိုက်ပို့ပြီး စစ်ဆေးနိုင်ပါတယ်။\n\n"
+        "⚙️ <b>QUICK COMMANDS:</b>\n"
+        "• /start - Bot ကို အစကနေစရန်\n"
+        "• /help - လမ်းညွှန်ကြည့်ရန်\n"
+        "• /stop - အလုပ်ရပ်ရန်\n"
+        "══════════════════════════════"
     )
-    bot.reply_to(message, help_text, parse_mode="Markdown")
+    
+    markup = telebot.types.InlineKeyboardMarkup()
+    btn_start = telebot.types.InlineKeyboardButton("🚀 စတင်ရန် (/start)", callback_data="cmd_start")
+    btn_stop = telebot.types.InlineKeyboardButton("🛑 ရပ်တန့်ရန် (/stop)", callback_data="cmd_stop")
+    markup.add(btn_start, btn_stop)
+
+    bot.reply_to(message, help_text, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, "❌ Admin သာလျှင် သုံးခွင့်ရှိသည်။")
+        return
+
+    if call.data == "cmd_start":
+        bot.answer_callback_query(call.id, "🚀 Control Panel သို့ ရောက်ရှိပါပြီ...")
+        fake_message = call.message
+        fake_message.text = "/start"
+        send_welcome(fake_message)
+    elif call.data == "cmd_help":
+        bot.answer_callback_query(call.id, "📖 Help Menu ကို ဖွင့်နေပါပြီ...")
+        fake_message = call.message
+        fake_message.text = "/help"
+        send_help(fake_message)
+    elif call.data == "cmd_stop":
+        bot.answer_callback_query(call.id, "🛑 စနစ်ကို ရပ်တန့်လိုက်ပါပြီ။")
+        fake_message = call.message
+        fake_message.text = "/stop"
+        handle_stop_command(fake_message)
 
 @bot.message_handler(commands=['stop'])
 def handle_stop_command(message):
     chat_id = message.chat.id
     if chat_id in user_sessions:
         del user_sessions[chat_id]
-    bot.reply_to(message, "🛑 *လုပ်ဆောင်ချက်များကို ရပ်တန့်လိုက်ပါပြီ။*\n\nအသစ်ပြန်စလိုပါက `/start` ကို နှိပ်ပါ။", parse_mode="Markdown")
+    
+    stop_text = (
+        "🛑 <b>SYSTEM TERMINATED</b>\n"
+        "──────────────────────────────\n"
+        "လုပ်ဆောင်ချက်အားလုံးကို အောင်မြင်စွာ ရပ်တန့်လိုက်ပါပြီ။\n"
+        "အသစ်ပြန်စလိုပါက အောက်ပါခလုတ်ကို နှိပ်ပါ 👇"
+    )
+    markup = telebot.types.InlineKeyboardMarkup()
+    btn_start = telebot.types.InlineKeyboardButton("🚀 ပြန်လည်စတင်ရန် (/start)", callback_data="cmd_start")
+    # Fixed syntax for button creation below:
+    markup = telebot.types.InlineKeyboardMarkup()
+    btn_start = telebot.types.InlineKeyboardButton("🚀 ပြန်လည်စတင်ရန် (/start)", callback_data="cmd_start")
+    markup.add(btn_start)
+    
+    bot.reply_to(message, stop_text, parse_mode="HTML", reply_markup=markup)
 
 def process_url_step(message):
     chat_id = message.chat.id
@@ -165,21 +231,25 @@ def process_url_step(message):
         return
     elif url.startswith('/help'):
         send_help(message)
-        msg = bot.send_message(chat_id, "⏳ ကျေးဇူးပြု၍ သင်၏ *WiFi Session URL* ကို ပို့ပေးပါရန်။", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_url_step)
         return
     elif url.startswith('/stop'):
         handle_stop_command(message)
         return
 
     if not url.startswith('http'):
-        msg = bot.reply_to(message, "⚠️ URL ပုံစံ မှားယွင်းနေပုံရပါတယ်။ ကျေးဇူးပြု၍ `http://` သို့မဟုတ် `https://` ပါဝင်သော URL အမှန်ကို ပြန်ပို့ပေးပါရန်။\n(ရပ်တန့်လိုပါက `/stop` ကို ရိုက်ပါ)")
+        msg = bot.reply_to(message, "⚠️ <b>ERROR:</b> `http://` သို့မဟုတ် `https://` ပါဝင်သော URL အမှန်ကို ပြန်ပို့ပေးပါ။", parse_mode="HTML")
         bot.register_next_step_handler(msg, process_url_step)
         return
 
     user_sessions[chat_id] = url
     
-    msg = bot.reply_to(message, "✅ URL ရပါပြီ။\n\nအဆင့် (၂) - စစ်ဆေးလိုသော *Voucher Code* ကို ရိုက်ထည့်ပေးပါဗျာ။\n(ရပ်တန့်လိုပါက `/stop` ကို ရိုက်ပါ)", parse_mode="Markdown")
+    success_text = (
+        "✅ <b>URL ACCEPTED & SAVED!</b>\n"
+        "──────────────────────────────\n"
+        "📥 <b>STEP 2:</b> ယခု စစ်ဆေးလိုသော <b>Voucher Code</b> ကို ရိုက်ထည့်ပေးပါဗျ.\n\n"
+        "<i>(ဆက်တိုက် ပို့ပြီး စစ်ဆေးနိုင်ပါတယ်)</i>"
+    )
+    msg = bot.reply_to(message, success_text, parse_mode="HTML")
     bot.register_next_step_handler(msg, process_voucher_step)
 
 def process_voucher_step(message):
@@ -191,8 +261,6 @@ def process_voucher_step(message):
         return
     elif voucher.startswith('/help'):
         send_help(message)
-        msg = bot.send_message(chat_id, "🔄 စစ်ဆေးလိုသော *Voucher Code* ကို ဆက်လက်ပို့ပေးနိုင်ပါတယ်ဗျာ။", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_voucher_step)
         return
     elif voucher.startswith('/stop'):
         handle_stop_command(message)
@@ -200,60 +268,82 @@ def process_voucher_step(message):
 
     session_url = user_sessions.get(chat_id)
     if not session_url:
-        bot.reply_to(message, "⚠️ Session သက်တမ်း ကုန်ဆုံးသွားပါပြီ။ `/start` ကို ပြန်နှိပ်ပြီး အစကပြန်လုပ်ပေးပါ။", parse_mode="Markdown")
+        bot.reply_to(message, "⚠️ <b>Session Expired!</b> ကျေးဇူးပြု၍ `/start` ကို ပြန်နှိပ်ပါ။", parse_mode="HTML")
         return
 
-    status_msg = bot.reply_to(message, "⏳ ဆာဗာမှ အချက်အလက်များကို စစ်ဆေးနေပါသည်...")
+    status_msg = bot.reply_to(message, "⚡ <code>[████░░░░░░] Connecting to Server...</code>", parse_mode="HTML")
+    time.sleep(0.3)
+    try:
+        bot.edit_message_text("⚡ <code>[████████░░] Scanning Database & Token...</code>", chat_id=chat_id, message_id=status_msg.message_id, parse_mode="HTML")
+    except:
+        pass
 
-    # Step 1: Get Session ID
     session_id = get_session_id(session_url)
     if not session_id:
-        bot.edit_message_text("❌ Session ID မရနိုင်ပါ (URL မှားယွင်းနေနိုင်ပါသည်)။ URL ပြန်ပို့ပေးရန် `/start` ကို ပြန်နှိပ်ပါ။", chat_id=chat_id, message_id=status_msg.message_id)
+        try:
+            resp = requests.get(session_url, timeout=5, allow_redirects=True)
+            m = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", resp.url)
+            if m: session_id = m.group(1)
+        except:
+            pass
+
+    if not session_id:
+        bot.edit_message_text("❌ <b>ERROR:</b> Session ID ရှာမတွေ့ပါ။ URL အမှန်ကို ပြန်လည် ပို့ပေးပါရန်。", chat_id=chat_id, message_id=status_msg.message_id, parse_mode="HTML")
+        msg = bot.send_message(chat_id, "🔄 ကျေးဇူးပြု၍ မှန်ကန်သော **Session URL** အသစ် ပြန်ပို့ပါ (သို့မဟုတ် `/stop` ဖြင့် ရပ်ပါ)။", parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_url_step)
         return
 
-    # Step 2: Login Voucher
     active_session_id, error = login_voucher(session_id, voucher)
     if not active_session_id:
-        tg_res = f"📊 *VOUCHER RESULT*\n\n🎫 *Voucher:* `{voucher}`\n📊 *Status:* ❌ Invalid သို့မဟုတ် Expired ဖြစ်နေပါသည်။\n\n🔄 နောက်ထပ်စစ်ချင်သော *Voucher Code* ကို ထပ်မံ ပို့ပေးနိုင်ပါတယ်ဗျာ။\n(ရပ်တန့်လိုပါက `/stop` ကို ရိုက်ပါ)"
-        msg = bot.edit_message_text(tg_res, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
+        fail_res = (
+            f"❌ <b>VOUCHER CHECK RESULT</b>\n"
+            f"──────────────────────────────\n"
+            f"🎫 <b>Voucher:</b> <code>{voucher}</code>\n"
+            f"📊 <b>Status:</b> ❌ Invalid / Expired (သို့မဟုတ် သုံးပြီးသား)\n\n"
+            f"🔄 <i>နောက်ထပ် Voucher Code ကို ဆက်တိုက်ပို့နိုင်ပါတယ်။</i>"
+        )
+        msg = bot.edit_message_text(fail_res, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="HTML")
         bot.register_next_step_handler(msg, process_voucher_step)
         return
 
-    # Step 3: Get Balance
     balance_data = get_balance(active_session_id)
     
-    # Step 4: Format Result
-    tg_msg = f"📊 *VOUCHER DETAILS*\n"
-    tg_msg += f"──────────────────\n"
-    tg_msg += f"🎫 *Voucher:* `{voucher}`\n"
+    tg_msg = (
+        f"💎 <b>KYAW ZIN - VOUCHER DETAILS</b> 💎\n"
+        f"══════════════════════════════\n"
+        f"🎫 <b>Voucher Code:</b> <code>{voucher}</code>\n"
+    )
 
     if balance_data and 'result' in balance_data:
         result = balance_data['result']
-        tg_msg += f"💻 *MAC:* `{result.get('mac', 'N/A')}`\n"
-        tg_msg += f"📋 *Plan:* {result.get('profileName', 'Unknown')}\n"
+        tg_msg += f"💻 <b>MAC Address:</b> <code>{result.get('mac', 'N/A')}</code>\n"
+        tg_msg += f"📋 <b>Plan Name:</b> <code>{result.get('profileName', 'Unknown')}</code>\n"
         
         total_minutes = result.get('totalMinutes', 0)
-        tg_msg += f"📦 *Total Time:* {format_time(total_minutes)}\n"
+        tg_msg += f"📦 <b>Total Time:</b> <code>{format_time(total_minutes)}</code>\n"
         
         remaining = result.get('remainingMinutes', 0)
-        tg_msg += f"⏱️ *Remaining:* {format_time(remaining)}\n"
+        tg_msg += f"⏱️ <b>Remaining:</b> <code>{format_time(remaining)}</code>\n"
         
         status = result.get('status', 'Unknown')
         if status == 1 or status == 'active':
-            tg_msg += f"📊 *Status:* ✅ Active\n"
+            tg_msg += f"📊 <b>Status:</b> ✅ <b>ACTIVE / ONLINE</b>\n"
         else:
-            tg_msg += f"📊 *Status:* ❌ Inactive / Expired\n"
+            tg_msg += f"📊 <b>Status:</b> ❌ <b>EXPIRED / INACTIVE</b>\n"
     else:
-        tg_msg += f"📊 *Status:* ❌ အချက်အလက် ဆွဲမရပါ\n"
+        tg_msg += f"📊 <b>Status:</b> ⚠️ <b>Data fetched partially</b>\n"
         
-    tg_msg += f"──────────────────\n\n"
-    tg_msg += f"🔄 နောက်ထပ်စစ်ချင်သော *Voucher Code* ကို ထပ်မံ ပို့ပေးနိုင်ပါတယ်ဗျာ။\n(ရပ်တန့်လိုပါက `/stop` ကို ရိုက်ပါ)"
+    tg_msg += (
+        f"══════════════════════════════\n"
+        f"👤 <b>By:</b> KYAW ZIN (@kyawzin114800)\n\n"
+        f"🔄 <i>နောက်ထပ် Voucher Code ကို ဆက်လက် ပို့ပေးနိုင်ပါတယ်!</i>"
+    )
     
-    msg = bot.edit_message_text(tg_msg, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
+    msg = bot.edit_message_text(tg_msg, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="HTML")
     bot.register_next_step_handler(msg, process_voucher_step)
 
 if __name__ == "__main__":
     print("🚀 Starting Keep-Alive Flask Server...")
     keep_alive()
-    print("🚀 Telegram Bot is running...")
+    print("🚀 KYAW ZIN v2.0 PRO Telegram Bot is running successfully...")
     bot.infinity_polling()
