@@ -499,4 +499,8 @@ if __name__ == "__main__":
     flask_thread.start()
     
     print("🚀 KYAW ZIN v2.0 PRO Telegram Bot & Flask Server are running successfully...")
-    bot.infinity_polling(none_stop=True)
+    
+    # 409 Conflict Error ကင်းစေရန် Webhook ကို ရှင်းလုတ်ပြီးမှ Polling စတင်ရန်
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.infinity_polling(none_stop=True, interval=0, timeout=20)
