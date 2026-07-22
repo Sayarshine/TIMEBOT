@@ -24,7 +24,6 @@ def home():
     return "Bot is awake and running 24/7!"
 
 def run_flask():
-    # Render က ပေးတဲ့ PORT ကို ယူသုံးရန် (မရှိရင် 8080 ကို သုံးပါမည်)
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -59,12 +58,21 @@ def extract_session_id(text_or_url):
     try:
         from urllib.parse import unquote
         decoded_text = unquote(text_or_url)
+        
+        # ၁။ sessionId ကို အရင်ရှာမည်
         match = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", decoded_text)
         if match: return match.group(1)
+        
         match_orig = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", text_or_url)
         if match_orig: return match_orig.group(1)
-        match_text = re.search(r"sessionId=([a-zA-Z0-9_-]+)", decoded_text)
-        if match_text: return match_text.group(1)
+
+        # ၂။ wifidog ပုံစံ URL များအတွက် gw_id သို့မဟုတ် token ကိုပါ ရှာပေးရန်
+        match_gw = re.search(r"[?&]gw_id=([a-zA-Z0-9_-]+)", decoded_text)
+        if match_gw: return match_gw.group(1)
+
+        match_token = re.search(r"[?&]token=([a-zA-Z0-9_-]+)", decoded_text)
+        if match_token: return match_token.group(1)
+
         clean_text = text_or_url.strip()
         if len(clean_text) > 10 and not clean_text.startswith("http") and " " not in clean_text:
             return clean_text
@@ -290,7 +298,7 @@ def getsession_command(message):
         )
         bot.reply_to(message, result_text, parse_mode="Markdown")
     else:
-        bot.reply_to(message, "❌ **ERROR:** ပေးထားသော URL ထဲမှ Session ID ရှာမတွေ့ပါ။", parse_mode="Markdown")
+        bot.reply_to(message, "❌ **ERROR:** ပေးထားသော URL ထဲမှ Session ID သို့မဟုတ် gw_id ရှာမတွေ့ပါ။", parse_mode="Markdown")
 
 @bot.message_handler(commands=['help'])
 def send_help(message):
@@ -486,7 +494,6 @@ def process_voucher_step(message):
     bot.register_next_step_handler(msg, process_voucher_step)
 
 if __name__ == "__main__":
-    # Start Flask server in a separate background thread so it doesn't block the Telegram bot
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
