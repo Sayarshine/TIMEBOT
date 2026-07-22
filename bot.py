@@ -1,349 +1,528 @@
-import re
-import requests
-import base64
-import json
-import os
-import time
-import threading
-from flask import Flask
-import telebot
+import telebot, asyncio, aiohttp, json, base64, random, re, os, string, time, uuid
+from telebot.async_telebot import AsyncTeleBot
+from aiohttp import web
+import cv2
+import ddddocr
+import numpy as np
+from datetime import datetime, timedelta, timezone
 
-CONFIG_FILE = "config_synx.json"
+BOT_TOKEN = '8739058169:AAHQLlPvsgkRTfpcckZ8CbENrFlflr0GSGE'
+GITHUB_TOKEN = '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'
+OWNER_ID = "6779617599"
+REPO_OWNER = "k4370975-lang"
+REPO_NAME = "my-new-bot"
+SUCCESS_CODE = asyncio.Queue()
+bot = AsyncTeleBot(BOT_TOKEN)
+user_data = {}
+approve = {}
+scan_tasks = {}
+success_messages = {}
+success_texts = {}
+limited_messages = {}
+limited_texts = {}
+captcha_state = {}
+retry_counts = {}
+session = None
+_connector = None
 
-# ---- Telegram Configuration ----
-BOT_TOKEN = "8917211694:AAHxHW0_1nDvLFiRMpBDYG6oahkOi9Fusa8"
-ADMIN_IDS = [6779617599, 8691909482]
-# --------------------------------
+# ==================== SPEED SETTINGS ====================
+CONCURRENCY = 150       
+TARGET_SPEED = 2800     
+# ========================================================
 
-bot = telebot.TeleBot(BOT_TOKEN)
+_voucher_sem = None
+_start_time = time.monotonic()
 
-# Clear any active webhooks to prevent 409 Conflict error
-try:
-    bot.remove_webhook()
-    print("🗑️ Existing webhooks cleared successfully.")
-except Exception as e:
-    print(f"⚠️ Webhook remove warning: {e}")
+# ==================== FLASK / WEB SERVER ====================
+async def handle(request):
+    return web.Response(text="Bot is awake and running 24/7!")
 
-# ---- Flask Server for UptimeRobot Keep-Alive ----
-app = Flask('')
+async def web_server():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get('PORT', 8099))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Web server started on port {port}")
+# ============================================================
 
-@app.route('/')
-def home():
-    return "🤖 KYAW ZIN Telegram Bot is active and running!"
+async def get_file_content(path):
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{path}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    async with session.get(url, headers=headers) as response:
+        if response.status == 200:
+            data = await response.json()
+            content = base64.b64decode(data['content']).decode('utf-8')
+            return json.loads(content), data['sha']
+    return {}, None
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = threading.Thread(target=run_flask)
-    t.start()
-# --------------------------------------------------
-
-# User တစ်ယောက်ချင်းစီရဲ့ Session URL ကို ယာယီမှတ်ထားရန် memory dict
-user_sessions = {}
-
-def is_admin(chat_id):
-    return chat_id in ADMIN_IDS
-
-def get_session_id(session_url):
+async def update_file_content(path, content, sha, message):
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{path}"
     headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'accept-language': 'en-US,en;q=0.9',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Content-Type": "application/json"
     }
-    try:
-        response = requests.get(session_url, headers=headers, timeout=10, allow_redirects=True)
-        match = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", response.url)
-        if match: return match.group(1)
-        
-        match_orig = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", session_url)
-        if match_orig: return match_orig.group(1)
-            
-        match_text = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", response.text)
-        if match_text: return match_text.group(1)
-            
-        return None
-    except Exception as e:
-        print(f"Error getting session ID: {e}")
-        return None
-
-def login_voucher(session_id, voucher):
-    data = {"accessCode": voucher, "sessionId": session_id, "apiVersion": 2}
-    post_url = base64.b64decode(b'aHR0cHM6Ly9wb3J0YWwtYXMucnVpamllbmV0d29ya3MuY29tL2FwaS9hdXRoL3ZvdWNoZXIvP2xhbmc9ZW5fVVM=').decode()
-    headers = {
-        "content-type": "application/json",
-        "user-agent": 'Mozilla/5.0 (Linux; Android 12; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/139.0.0.0',
+    encoded = base64.b64encode(json.dumps(content).encode()).decode()
+    payload = {
+        "message": message,
+        "content": encoded,
+        "sha": sha
     }
-    try:
-        with requests.post(post_url, json=data, headers=headers, timeout=10) as response:
-            res_text = response.text
-            token_match = re.search(r'token=(.*?)&', res_text)
-            if token_match:
-                return token_match.group(1), None
-            else:
-                try:
-                    res_json = response.json()
-                    if 'result' in res_json and isinstance(res_json['result'], dict):
-                        token = res_json['result'].get('token') or res_json['result'].get('sessionId')
-                        if token: return token, None
-                except:
-                    pass
-                return None, res_text
-    except Exception as Error:
-        return None, str(Error)
-
-def get_balance(active_session_id):
-    headers = {
-        'accept': 'application/json, text/javascript, */*; q=0.01',
-        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
-    }
-    try:
-        response = requests.get(
-            f'https://portal-as.ruijienetworks.com/api/auth/balance/getBalance/{active_session_id}',
-            headers=headers,
-            timeout=10
-        )
-        return response.json()
-    except:
-        return None
-
-def format_time(minutes):
-    if minutes is None or minutes == 0: return "N/A"
-    try:
-        minutes = int(minutes)
-    except:
-        return str(minutes)
-    if minutes <= 0: return "⛔ <b>Expired</b>"
-    days = minutes // 1440
-    hours = (minutes % 1440) // 60
-    mins = minutes % 60
-    parts = []
-    if days > 0: parts.append(f"{days}d")
-    if hours > 0: parts.append(f"{hours}h")
-    if mins > 0: parts.append(f"{mins}m")
-    return " ".join(parts) if parts else "0m"
+    async with session.put(url, headers=headers, json=payload) as response:
+        return await response.text()
 
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    if not is_admin(message.chat.id):
-        bot.reply_to(message, "❌ <b>ACCESS DENIED:</b> သင်သည် System Admin မဟုတ်ပါ။")
-        return
-    
-    welcome_text = (
-        "👑 <b>KYAW ZIN v2.0 PRO - CONTROL PANEL</b> 👑\n"
-        "──────────────────────────────\n"
-        "⚡ <b>Owner:</b> <code>KYAW ZIN</code>\n"
-        "📱 <b>Telegram:</b> <code>@kyawzin114800</code>\n"
-        "──────────────────────────────\n\n"
-        "📥 <b>STEP 1:</b> ကျေးဇူးပြု၍ မိမိရဲ့ <b>WiFi Session URL</b> (သို့မဟုတ် Portal Link) ကို ပို့ပေးပါဗျ။\n\n"
-        "💡 <i>အကူအညီလိုပါက /help ကိုနှိပ်ပါ။</i>\n"
-        "🛑 <i>လုပ်ဆောင်ချက်ရပ်ရန် /stop ကိုနှိပ်ပါ။</i>"
-    )
-    
-    markup = telebot.types.InlineKeyboardMarkup()
-    btn_start = telebot.types.InlineKeyboardButton("🚀 စတင်ရန် (/start)", callback_data="cmd_start")
-    btn_help = telebot.types.InlineKeyboardButton("📖 လမ်းညွှန် (/help)", callback_data="cmd_help")
-    btn_stop = telebot.types.InlineKeyboardButton("🛑 ရပ်တန့်ရန် (/stop)", callback_data="cmd_stop")
-    markup.add(btn_start, btn_help)
-    markup.add(btn_stop)
+async def start(message):
+    await bot.reply_to(message, "Bot စတင်ပါပြီ။ /key ဖြင့်စတင်ပါ။")
 
-    msg = bot.reply_to(message, welcome_text, parse_mode="HTML", reply_markup=markup)
-    bot.register_next_step_handler(msg, process_url_step)
-
-@bot.message_handler(commands=['help'])
-def send_help(message):
-    if not is_admin(message.chat.id):
-        bot.reply_to(message, "❌ <b>ACCESS DENIED</b>")
-        return
-
-    help_text = (
-        "📖 <b>KYAW ZIN BOT - SYSTEM GUIDE</b> 📖\n"
-        "══════════════════════════════\n"
-        "ဒီ Bot ကို အဆင့် (၂) ဆင့်နဲ့ အလွယ်ဆုံး သုံးနိုင်ပါတယ်-\n\n"
-        "1️⃣ <b>STEP 1 (URL ပို့ရန်):</b>\n"
-        "   • `/start` ကိုနှိပ်ပြီး WiFi Captive Portal ရဲ့ <b>URL</b> ကို ပို့ပါ။\n\n"
-        "2️⃣ <b>STEP 2 (Voucher စစ်ရန်):</b>\n"
-        "   • URL အောင်မြင်သွားရင် **Voucher Code** တွေကို ဆက်တိုက်ပို့ပြီး စစ်ဆေးနိုင်ပါတယ်။\n\n"
-        "⚙️ <b>QUICK COMMANDS:</b>\n"
-        "• /start - Bot ကို အစကနေစရန်\n"
-        "• /help - လမ်းညွှန်ကြည့်ရန်\n"
-        "• /stop - အလုပ်ရပ်ရန်\n"
-        "══════════════════════════════"
-    )
-    
-    markup = telebot.types.InlineKeyboardMarkup()
-    btn_start = telebot.types.InlineKeyboardButton("🚀 စတင်ရန် (/start)", callback_data="cmd_start")
-    btn_stop = telebot.types.InlineKeyboardButton("🛑 ရပ်တန့်ရန် (/stop)", callback_data="cmd_stop")
-    markup.add(btn_start, btn_stop)
-
-    bot.reply_to(message, help_text, parse_mode="HTML", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
-    if not is_admin(call.message.chat.id):
-        bot.answer_callback_query(call.id, "❌ Admin သာလျှင် သုံးခွင့်ရှိသည်။")
-        return
-
-    if call.data == "cmd_start":
-        bot.answer_callback_query(call.id, "🚀 Control Panel သို့ ရောက်ရှိပါပြီ...")
-        fake_message = call.message
-        fake_message.text = "/start"
-        send_welcome(fake_message)
-    elif call.data == "cmd_help":
-        bot.answer_callback_query(call.id, "📖 Help Menu ကို ဖွင့်နေပါပြီ...")
-        fake_message = call.message
-        fake_message.text = "/help"
-        send_help(fake_message)
-    elif call.data == "cmd_stop":
-        bot.answer_callback_query(call.id, "🛑 စနစ်ကို ရပ်တန့်လိုက်ပါပြီ။")
-        fake_message = call.message
-        fake_message.text = "/stop"
-        handle_stop_command(fake_message)
-
-@bot.message_handler(commands=['stop'])
-def handle_stop_command(message):
-    chat_id = message.chat.id
-    if chat_id in user_sessions:
-        del user_sessions[chat_id]
-    
-    stop_text = (
-        "🛑 <b>SYSTEM TERMINATED</b>\n"
-        "──────────────────────────────\n"
-        "လုပ်ဆောင်ချက်အားလုံးကို အောင်မြင်စွာ ရပ်တန့်လိုက်ပါပြီ။\n"
-        "အသစ်ပြန်စလိုပါက အောက်ပါခလုတ်ကို နှိပ်ပါ 👇"
-    )
-    markup = telebot.types.InlineKeyboardMarkup()
-    btn_start = telebot.types.InlineKeyboardButton("🚀 ပြန်လည်စတင်ရန် (/start)", callback_data="cmd_start")
-    # Fixed syntax for button creation below:
-    markup = telebot.types.InlineKeyboardMarkup()
-    btn_start = telebot.types.InlineKeyboardButton("🚀 ပြန်လည်စတင်ရန် (/start)", callback_data="cmd_start")
-    markup.add(btn_start)
-    
-    bot.reply_to(message, stop_text, parse_mode="HTML", reply_markup=markup)
-
-def process_url_step(message):
-    chat_id = message.chat.id
-    url = message.text.strip()
-    
-    if url.startswith('/start'):
-        send_welcome(message)
-        return
-    elif url.startswith('/help'):
-        send_help(message)
-        return
-    elif url.startswith('/stop'):
-        handle_stop_command(message)
-        return
-
-    if not url.startswith('http'):
-        msg = bot.reply_to(message, "⚠️ <b>ERROR:</b> `http://` သို့မဟုတ် `https://` ပါဝင်သော URL အမှန်ကို ပြန်ပို့ပေးပါ။", parse_mode="HTML")
-        bot.register_next_step_handler(msg, process_url_step)
-        return
-
-    user_sessions[chat_id] = url
-    
-    success_text = (
-        "✅ <b>URL ACCEPTED & SAVED!</b>\n"
-        "──────────────────────────────\n"
-        "📥 <b>STEP 2:</b> ယခု စစ်ဆေးလိုသော <b>Voucher Code</b> ကို ရိုက်ထည့်ပေးပါဗျ.\n\n"
-        "<i>(ဆက်တိုက် ပို့ပြီး စစ်ဆေးနိုင်ပါတယ်)</i>"
-    )
-    msg = bot.reply_to(message, success_text, parse_mode="HTML")
-    bot.register_next_step_handler(msg, process_voucher_step)
-
-def process_voucher_step(message):
-    chat_id = message.chat.id
-    voucher = message.text.strip()
-
-    if voucher.startswith('/start'):
-        send_welcome(message)
-        return
-    elif voucher.startswith('/help'):
-        send_help(message)
-        return
-    elif voucher.startswith('/stop'):
-        handle_stop_command(message)
-        return
-
-    session_url = user_sessions.get(chat_id)
-    if not session_url:
-        bot.reply_to(message, "⚠️ <b>Session Expired!</b> ကျေးဇူးပြု၍ `/start` ကို ပြန်နှိပ်ပါ။", parse_mode="HTML")
-        return
-
-    status_msg = bot.reply_to(message, "⚡ <code>[████░░░░░░] Connecting to Server...</code>", parse_mode="HTML")
-    time.sleep(0.3)
-    try:
-        bot.edit_message_text("⚡ <code>[████████░░] Scanning Database & Token...</code>", chat_id=chat_id, message_id=status_msg.message_id, parse_mode="HTML")
-    except:
-        pass
-
-    session_id = get_session_id(session_url)
-    if not session_id:
-        try:
-            resp = requests.get(session_url, timeout=5, allow_redirects=True)
-            m = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", resp.url)
-            if m: session_id = m.group(1)
-        except:
-            pass
-
-    if not session_id:
-        bot.edit_message_text("❌ <b>ERROR:</b> Session ID ရှာမတွေ့ပါ။ URL အမှန်ကို ပြန်လည် ပို့ပေးပါရန်。", chat_id=chat_id, message_id=status_msg.message_id, parse_mode="HTML")
-        msg = bot.send_message(chat_id, "🔄 ကျေးဇူးပြု၍ မှန်ကန်သော **Session URL** အသစ် ပြန်ပို့ပါ (သို့မဟုတ် `/stop` ဖြင့် ရပ်ပါ)။", parse_mode="HTML")
-        bot.register_next_step_handler(msg, process_url_step)
-        return
-
-    active_session_id, error = login_voucher(session_id, voucher)
-    if not active_session_id:
-        fail_res = (
-            f"❌ <b>VOUCHER CHECK RESULT</b>\n"
-            f"──────────────────────────────\n"
-            f"🎫 <b>Voucher:</b> <code>{voucher}</code>\n"
-            f"📊 <b>Status:</b> ❌ Invalid / Expired (သို့မဟုတ် သုံးပြီးသား)\n\n"
-            f"🔄 <i>နောက်ထပ် Voucher Code ကို ဆက်တိုက်ပို့နိုင်ပါတယ်။</i>"
-        )
-        msg = bot.edit_message_text(fail_res, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="HTML")
-        bot.register_next_step_handler(msg, process_voucher_step)
-        return
-
-    balance_data = get_balance(active_session_id)
-    
-    tg_msg = (
-        f"💎 <b>KYAW ZIN - VOUCHER DETAILS</b> 💎\n"
-        f"══════════════════════════════\n"
-        f"🎫 <b>Voucher Code:</b> <code>{voucher}</code>\n"
-    )
-
-    if balance_data and 'result' in balance_data:
-        result = balance_data['result']
-        tg_msg += f"💻 <b>MAC Address:</b> <code>{result.get('mac', 'N/A')}</code>\n"
-        tg_msg += f"📋 <b>Plan Name:</b> <code>{result.get('profileName', 'Unknown')}</code>\n"
-        
-        total_minutes = result.get('totalMinutes', 0)
-        tg_msg += f"📦 <b>Total Time:</b> <code>{format_time(total_minutes)}</code>\n"
-        
-        remaining = result.get('remainingMinutes', 0)
-        tg_msg += f"⏱️ <b>Remaining:</b> <code>{format_time(remaining)}</code>\n"
-        
-        status = result.get('status', 'Unknown')
-        if status == 1 or status == 'active':
-            tg_msg += f"📊 <b>Status:</b> ✅ <b>ACTIVE / ONLINE</b>\n"
+@bot.message_handler(commands=['key'])
+async def handle_key(message):
+    global approve
+    key = str(message.chat.id)
+    auth_list, _ = await get_file_content("auth_list.json")
+    if key in auth_list:
+        valid = check_key_expiration(auth_list[key])
+        if valid:
+            approve[message.chat.id] = True
+            user_data[message.chat.id] = {}
+            await bot.reply_to(
+                message,
+                " Key မှန်ကန်ပါသည်။ /input ဖြင့် Session URL ထည့်ပါ။"
+            )
         else:
-            tg_msg += f"📊 <b>Status:</b> ❌ <b>EXPIRED / INACTIVE</b>\n"
+            approve[message.chat.id] = False
+            await bot.reply_to(
+                message,
+                " Key Expired ဖြစ်နေပါသည်။"
+            )
     else:
-        tg_msg += f"📊 <b>Status:</b> ⚠️ <b>Data fetched partially</b>\n"
-        
-    tg_msg += (
-        f"══════════════════════════════\n"
-        f"👤 <b>By:</b> KYAW ZIN (@kyawzin114800)\n\n"
-        f"🔄 <i>နောက်ထပ် Voucher Code ကို ဆက်လက် ပို့ပေးနိုင်ပါတယ်!</i>"
-    )
-    
-    msg = bot.edit_message_text(tg_msg, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="HTML")
-    bot.register_next_step_handler(msg, process_voucher_step)
+        await bot.reply_to(
+            message,
+            " သင်၏ key ကို registered မလုပ်ရသေးပါ။"
+        )
 
-if __name__ == "__main__":
-    print("🚀 Starting Keep-Alive Flask Server...")
-    keep_alive()
-    print("🚀 KYAW ZIN v2.0 PRO Telegram Bot is running successfully...")
-    bot.infinity_polling()
+# ==================== OWNER / ADMIN MANAGEMENT FEATURES ====================
+
+@bot.message_handler(commands=['addadmin'])
+async def add_admin(message):
+    if str(message.chat.id) != OWNER_ID:
+        await bot.reply_to(message, "⚠️ ဤ විධාန် (Command) သည် Owner အတွက်သာ သီးသန့်ဖြစ်ပါသည်။")
+        return
+    try:
+        args = message.text.split()
+        if len(args) < 2:
+            await bot.reply_to(message, "Usage:\n/addadmin <user_id>")
+            return
+        new_admin_id = args[1]
+        admins, sha = await get_file_content("admins.json")
+        if not isinstance(admins, dict):
+            admins = {"admins": []}
+        if "admins" not in admins:
+            admins["admins"] = []
+            
+        if new_admin_id in admins["admins"]:
+            await bot.reply_to(message, f"⚠️ User ID {new_admin_id} သည် Admin စာရင်းတွင် ရှိနှင့်ပြီးသား ဖြစ်ပါသည်။")
+            return
+            
+        admins["admins"].append(new_admin_id)
+        await update_file_content("admins.json", admins, sha, f"Add admin {new_admin_id}")
+        await bot.reply_to(message, f"✅ Successfully added {new_admin_id} as Admin.")
+    except Exception as e:
+        print(f"Error at addadmin: {e}")
+        await bot.reply_to(message, "❌ Admin ထည့်သွင်းရာတွင် အမှားအယွင်းရှိခဲ့ပါသည်။")
+
+@bot.message_handler(commands=['removeadmin'])
+async def remove_admin(message):
+    if str(message.chat.id) != OWNER_ID:
+        await bot.reply_to(message, "⚠️ ဤ විධාန် သည် Owner အတွက်သာ သီးသန့်ဖြစ်ပါသည်။")
+        return
+    try:
+        args = message.text.split()
+        if len(args) < 2:
+            await bot.reply_to(message, "Usage:\n/removeadmin <user_id>")
+            return
+        target_id = args[1]
+        admins, sha = await get_file_content("admins.json")
+        if not admins or "admins" not in admins or target_id not in admins["admins"]:
+            await bot.reply_to(message, f"⚠️ User ID {target_id} ကို Admin စာရင်းတွင် မတွေ့ရှိပါ။")
+            return
+            
+        admins["admins"].remove(target_id)
+        await update_file_content("admins.json", admins, sha, f"Remove admin {target_id}")
+        await bot.reply_to(message, f"✅ Successfully removed {target_id} from Admins.")
+    except Exception as e:
+        print(f"Error at removeadmin: {e}")
+
+@bot.message_handler(commands=['kick'])
+async def kick_user(message):
+    is_owner = str(message.chat.id) == OWNER_ID
+    if not is_owner:
+        try:
+            member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+            if member.status not in ['administrator', 'creator']:
+                await bot.reply_to(message, "⚠️ ဤ Group တွင် Member များကို Kick ထုတ်ရန် Admin ဖြစ်ရန် လိုအပ်ပါသည်။")
+                return
+        except:
+            await bot.reply_to(message, "⚠️ ခွင့်ပြုချက် မရှိပါ။")
+            return
+
+    if not message.reply_to_message:
+        await bot.reply_to(message, "⚠️ ကျေးဇူးပြု၍ Kick ထုတ်လိုသူ၏ မက်ဆေ့ခ်ျကို Reply လုပ်၍ /kick ဟု အသုံးပြုပါ။")
+        return
+        
+    try:
+        target_user = message.reply_to_message.from_user
+        if str(target_user.id) == OWNER_ID:
+            await bot.reply_to(message, "❌ Owner ကို Kick ထုတ်၍ မရပါ။")
+            return
+        await bot.ban_chat_member(message.chat.id, target_user.id)
+        await bot.unban_chat_member(message.chat.id, target_user.id)
+        await bot.reply_to(message, f"✅ Successfully kicked {target_user.first_name} from the group.")
+    except Exception as e:
+        await bot.reply_to(message, f"❌ Kick ထုတ်၍မရပါ (သို့) Bot တွင် Permission မရှိပါ။ Error: {e}")
+
+@bot.message_handler(commands=['ban'])
+async def ban_user(message):
+    if str(message.chat.id) != OWNER_ID:
+        try:
+            member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+            if member.status not in ['administrator', 'creator']:
+                await bot.reply_to(message, "⚠️ ခွင့်ပြုချက် မရှိပါ။")
+                return
+        except:
+            await bot.reply_to(message, "⚠️ ခွင့်ပြုချက် မရှိပါ။")
+            return
+
+    if not message.reply_to_message:
+        await bot.reply_to(message, "⚠️ Ban လိုသူ၏ message ကို reply ပေး၍ /ban သုံးပါ။")
+        return
+    try:
+        target_user = message.reply_to_message.from_user
+        if str(target_user.id) == OWNER_ID:
+            await bot.reply_to(message, "❌ Owner ကို Ban ၍ မရပါ။")
+            return
+        await bot.ban_chat_member(message.chat.id, target_user.id)
+        await bot.reply_to(message, f"🚫 Successfully banned {target_user.first_name}.")
+    except Exception as e:
+        await bot.reply_to(message, f"❌ Error: {e}")
+
+# ============================================================================
+
+@bot.message_handler(commands=['listkeys'])
+async def listkeys(message):
+    if str(message.chat.id) != OWNER_ID:
+        await bot.reply_to(message, "No Permission")
+        return
+    try:
+        auth_list, _ = await get_file_content("auth_list.json")
+        if not auth_list:
+            await bot.reply_to(message, "Registered key မရှိသေးပါ။")
+            return
+        lines = []
+        for uid, data in auth_list.items():
+            if isinstance(data, dict):
+                expires = data.get("expires_at", "unknown")
+                plan = data.get("plan", "unknown")
+                if expires == "9999-12-31T23:59:59Z":
+                    expires_str = "Unlimited"
+                else:
+                    try:
+                        exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+                        now = datetime.now(timezone.utc)
+                        if exp_dt < now:
+                            expires_str = "Expired"
+                        else:
+                            diff = exp_dt - now
+                            days = diff.days
+                            hours, rem = divmod(diff.seconds, 3600)
+                            minutes = rem // 60
+                            expires_str = f"{days}d {hours}h {minutes}m left"
+                    except:
+                        expires_str = expires
+            else:
+                plan = "old"
+                expires_str = str(data)
+            lines.append(f"👤 {uid}\n   Plan: {plan}\n   Expires: {expires_str}")
+        text = f"📋 Registered Keys ({len(auth_list)})\n\n" + "\n\n".join(lines)
+        if len(text) > 4096:
+            for i in range(0, len(text), 4096):
+                await bot.send_message(message.chat.id, text[i:i+4096])
+        else:
+            await bot.reply_to(message, text)
+    except Exception as e:
+        print(f"Error at listkeys {e}")
+
+@bot.message_handler(commands=['delkey'])
+async def delkey(message):
+    if str(message.chat.id) != OWNER_ID:
+        await bot.reply_to(message, "No Permission")
+        return
+    try:
+        args = message.text.split()
+        if len(args) < 2:
+            await bot.reply_to(message, "Usage:\n/delkey 123456789")
+            return
+        user_id = args[1]
+        auth_list, sha = await get_file_content("auth_list.json")
+        if user_id not in auth_list:
+            await bot.reply_to(message, f"User ID {user_id} မတွေ့ပါ။")
+            return
+        del auth_list[user_id]
+        await update_file_content(
+            "auth_list.json",
+            auth_list,
+            sha,
+            f"Delete key for {user_id}"
+        )
+        approve.pop(int(user_id), None)
+        user_data.pop(int(user_id), None)
+        await bot.reply_to(
+            message,
+            f" Key Deleted\n\nUSER ID : {user_id}"
+        )
+    except Exception as e:
+        print(f"Error at delkey {e}")
+
+@bot.message_handler(commands=['genkey'])
+async def genkey(message):
+    if str(message.chat.id) != OWNER_ID:
+        await bot.reply_to(message, "No Permission")
+        return
+    try:
+        args = message.text.split()
+        if len(args) < 3:
+            await bot.reply_to(message, "Usage:\n/genkey 1h 123456789")
+            return
+        plan = args[1]
+        user_id = args[2]
+        expiry = generate_expiry(plan)
+        if not expiry:
+            await bot.reply_to(
+                message,
+                "Plans:\n30m\n1h\n1d\n7d\n1m\n1y\nunlimited"
+            )
+            return
+        auth_list, sha = await get_file_content("auth_list.json")
+        auth_list[user_id] = {
+            "expires_at": expiry,
+            "plan": plan
+        }
+        await update_file_content(
+            "auth_list.json",
+            auth_list,
+            sha,
+            f"Add key for {user_id}"
+        )
+        await bot.reply_to(
+            message,
+            f" Key Generated\n\n"
+            f"USER ID : {user_id}\n"
+            f"PLAN : {plan}\n"
+            f"EXPIRES : {expiry}"
+        )
+    except Exception as e:
+        print(f"Error at genkey {e}")
+
+@bot.message_handler(commands=['result'])
+async def handle_result(message):
+    auth_list, _ = await get_file_content("auth_list.json")
+    if str(message.chat.id) in auth_list:
+        results, _ = await get_file_content("result.json")
+        chat_id_str = str(message.chat.id)
+        if chat_id_str in results and results[chat_id_str]:
+            codes = "\n".join(results[chat_id_str])
+            await bot.reply_to(message, f"✅ Found Codes:\n{codes}")
+        else:
+            await bot.reply_to(message, "သင့်တွင် ယခင်ကရရှိထားသေး code မရှိသေးပါ။")
+    else:
+        await bot.reply_to(message, "သင်၏ key ကို registered မပြုလုပ်ရသေးပါ။")
+
+def check_key_expiration(expiration_time):
+    try:
+        if isinstance(expiration_time, dict):
+            expiry = expiration_time.get("expires_at")
+            if expiry == "9999-12-31T23:59:59Z":
+                return True
+            exp_time = datetime.fromisoformat(
+                expiry.replace("Z", "+00:00")
+            )
+            return datetime.now(timezone.utc) < exp_time
+        mm, hh, dd, MM, yyyy = map(
+            int,
+            expiration_time.split('-')
+        )
+        expiration_dt = datetime(
+            year=yyyy,
+            month=MM,
+            day=dd,
+            hour=hh,
+            minute=mm,
+            second=0,
+            tzinfo=timezone.utc
+        )
+        return datetime.now(timezone.utc) < expiration_dt
+    except Exception as e:
+        print("Key parse error:", e)
+        return False
+
+def generate_expiry(plan):
+    now = datetime.now(timezone.utc)
+    plans = {
+        "30m": timedelta(minutes=30),
+        "1h": timedelta(hours=1),
+        "1d": timedelta(days=1),
+        "7d": timedelta(days=7),
+        "1m": timedelta(days=30),
+        "1y": timedelta(days=365),
+        "unlimited": None
+    }
+    if plan not in plans:
+        return None
+    if plan == "unlimited":
+        return "9999-12-31T23:59:59Z"
+    return (now + plans[plan]).isoformat()
+
+def get_current_time():
+    return datetime.now(timezone.utc)
+
+@bot.message_handler(commands=['recheck'])
+async def recheck(message):
+    chat_id = message.chat.id
+    if not approve.get(chat_id, False):
+        await bot.reply_to(message, "/recheck ကိုအသုံးမပြုမီ /key ကိုအရင်ပြုလုပ်ပေးပါ။")
+        return
+    auth_list, _ = await get_file_content("auth_list.json")
+    if str(message.chat.id) in auth_list:
+        results, sha = await get_file_content("result.json")
+        chat_id_str = str(message.chat.id)
+        if chat_id_str in results and results[chat_id_str]:
+            if message.chat.id not in user_data:
+                await bot.reply_to(message, "/scan ကိုအသုံးမပြုမီ /key ကိုအရင်ပြုလုပ်ပေးပါ။")
+                return
+            if "session_url" not in user_data[message.chat.id]:
+                await bot.reply_to(message, "/recheck ကိုအသုံးမပြုမီ /input ဖြင့် Session URL ကိုအရင်ထည့်သွင်းပေးရပါမည်။")
+                return
+            codes = results[chat_id_str]
+            await bot.reply_to(message, f"Success Code များအား ပြန်လည်စစ်ဆေးနေပါသည်။")
+            session_url_recheck = user_data[message.chat.id]["session_url"]
+            recheck_list = []
+            for code in codes:
+                recode = await perform_check(
+                    session_url_recheck,
+                    code,
+                    chat_id,
+                    scan_id=None,
+                    recheck=True,
+                    message=message
+                )
+                if recode:
+                    recheck_list.append(recode)
+            to_show = "\n".join(recheck_list) if recheck_list else "Code များအားလုံးစစ်ဆေးပြီးပါပြီ မည်သည့် success code မျှရှာမတွေ့ပါ။"
+            await bot.reply_to(message, f"✅ Rechcked Codes:\n\n{to_show}")
+            await save_rechecked_codes(chat_id_str, recheck_list, sha)
+        else:
+            await bot.reply_to(message, "သင့်တွင် success code တစ်ခုမျှမရှိသေးပါ။")
+    else:
+        await bot.reply_to(message, "သင်၏ key ကို registered မလုပ်ရသေးပါ။")
+
+async def save_rechecked_codes(chat_id_str, recheck_list, sha):
+    results, _ = await get_file_content("result.json")
+    results[chat_id_str] = recheck_list
+    await update_file_content("result.json", results, sha, f"Update after recheck for {chat_id_str}")
+
+async def check_session_url(session_url):
+    headers = {
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'accept-language': 'en-US,en;q=0.9',
+        'priority': 'u=0, i',
+        'referer': session_url,
+        'sec-ch-ua': '"Chromium";v="148", "Microsoft Edge";v="148", "Not/A)Brand";v="99"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Android"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'same-origin',
+        'upgrade-insecure-requests': '1',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0',
+        'cookie': 'sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%2219e0ddbd9f2152-0df941f2efc6b08-4c657b58-1327104-19e0ddbd9f3a60%22%2C%22first_id%22%3A%22%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E8%87%AA%E7%84%B6%E6%90%9C%E7%B4%A2%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC%22%2C%22%24latest_referrer%22%3A%22https%3A%2F%2Fgemini.google.com%2F%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTllMGRkYmQ5ZjIxNTItMGRmOTQxZjJlZmM2YjA4LTRjNjU3YjU4LTEzMjcxMDQtMTllMGRkYmQ5ZjNhNjAifQ%3D%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%22%2C%22value%22%3A%22%22%7D%2C%22%24device_id%22%3A%2219e0ddbd9f2152-0df941f2efc6b08-4c657b58-1327104-19e0ddbd9f3a60%22%7D'
+    }
+    try:
+        async with session.get(session_url, allow_redirects=True, headers=headers) as response:
+            text_ = str(response.url)
+            print(text_)
+            if "sessionId" in text_:
+                return True
+            else:
+                return False
+    except:
+        return False
+
+@bot.message_handler(commands=['input'])
+async def handle_input(message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await bot.reply_to(
+            message,
+            "Usage:\n\n/input your_session_url"
+        )
+        return
+    url = args[1]
+    if message.chat.id in user_data:
+        await bot.reply_to(message, "Session URL အားစစ်ဆေးနေပါသည်။")
+        if await check_session_url(session_url=url):
+            user_data[message.chat.id]['session_url'] = url
+            await bot.reply_to(message, "Session URL အားသိမ်းဆည်းပြီးပါပြီ။ /scan 6, 7, 8, all, ascii-lower စသည်ဖြင့်မိမိအသုံးပြုလိုတာကိုရွေးပြီး စတင်ပါ။")
+        else:
+            await bot.reply_to(message, f"Session URL မှားယွင်းနေပါသည်။")
+
+@bot.message_handler(commands=['scan'])
+async def scan(message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await bot.reply_to(
+            message,
+            "Usage:\n\n/scan <6, 7, 8, ascii-lower, all>"
+        )
+        return
+    mode = args[1]
+    chat_id = message.chat.id
+    if not approve.get(chat_id, False):
+        await bot.reply_to(message, "/scan ကိုအသုံးမပြုမီ /key ကိုအရင်ပြုလုပ်ပေးပါ။")
+        return
+    chat_id = message.chat.id
+    if chat_id not in user_data:
+        await bot.reply_to(message, "/scan ကိုအသုံးမပြုမီ /key ကိုအရင်ပြုလုပ်ပေးပါ။")
+        return
+    if 'session_url' not in user_data[chat_id]:
+        await bot.reply_to(message, "/scan ကိုအသုံးမပြုမီ /input ဖြင့် Session URL ကိုအရင်ထည့်သွင်းပေးရပါမည်။")
+        return
+
+    if (
+        chat_id in scan_tasks
+        and not scan_tasks[chat_id]["task"].done()
+    ):
+        await bot.reply_to(
+            message,
+            "/scan သည် အလုပ်လုပ်နေပြီဖြစ်သည် /scan ကိုထပ်မံမလုပ်ပါနှင့်။"
+        )
+        return
+
+    progress_msg = await bot.send_message(
+        chat_id,
+        "စတင်နေပါပြီ..."
+    )
+
+async def main():
+    global session, _connector
+    _connector = aiohttp.TCPConnector(limit=CONCURRENCY, ttl_dns_cache=300)
+    session = aiohttp.ClientSession(connector=_connector)
+    await web_server()
+    try:
+        await bot.infinity_polling()
+    finally:
+        await session.close()
+
+if __name__ == '__main__':
+    asyncio.run(main())
