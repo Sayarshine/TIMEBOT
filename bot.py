@@ -91,6 +91,9 @@ def login_voucher(session_id, voucher):
     try:
         with requests.post(post_url, json=data, headers=headers, timeout=10) as response:
             res_text = response.text
+            print(f"Server Response Debug: {res_text}") # Render logs တွင် စစ်ဆေးရန်
+            
+            # token ကို ရှာဖွေခြင်း
             token_match = re.search(r'token=(.*?)&', res_text)
             if token_match:
                 return token_match.group(1), None
@@ -100,6 +103,9 @@ def login_voucher(session_id, voucher):
                     if 'result' in res_json and isinstance(res_json['result'], dict):
                         token = res_json['result'].get('token') or res_json['result'].get('sessionId')
                         if token: return token, None
+                    # Error မက်ဆေ့ခ်ျအမှန်ကိုပါ ပြန်ယူရန်
+                    error_msg = res_json.get('message') or res_json.get('msg') or res_text
+                    return None, error_msg
                 except:
                     pass
                 return None, res_text
@@ -236,7 +242,8 @@ def testsession_command(message):
         fail_res = (
             "╭━━━[ ❌ CHECK FAILED ]━━━╮\n"
             f"┃ 🎫 Voucher : `{voucher}`   ┃\n"
-            "┃ 📊 Status  : ❌ Invalid    ┃\n"
+            f"┃ 📊 Status  : ❌ Invalid    ┃\n"
+            f"┃ 💬 Reason  : `{str(error)[:50]}` ┃\n"
             "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
         )
         bot.edit_message_text(fail_res, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
@@ -453,7 +460,8 @@ def process_voucher_step(message):
         fail_res = (
             "╭━━━[ ❌ CHECK FAILED ]━━━╮\n"
             f"┃ 🎫 Voucher : `{voucher}`   ┃\n"
-            "┃ 📊 Status  : ❌ Invalid    ┃\n"
+            f"┃ 📊 Status  : ❌ Invalid    ┃\n"
+            f"┃ 💬 Reason  : `{str(error)[:50]}` ┃\n"
             "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
             "🔄 *နောက်ထပ် Voucher Code ကို ဆက်တိုက်ပို့နိုင်ပါတယ်။*"
         )
@@ -500,7 +508,6 @@ if __name__ == "__main__":
     
     print("🚀 KYAW ZIN v2.0 PRO Telegram Bot & Flask Server are running successfully...")
     
-    # 409 Conflict Error ကင်းစေရန် Webhook ကို ရှင်းလုတ်ပြီးမှ Polling စတင်ရန်
     bot.remove_webhook()
     time.sleep(1)
     bot.infinity_polling(none_stop=True, interval=0, timeout=20)
