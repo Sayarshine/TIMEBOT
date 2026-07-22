@@ -59,22 +59,32 @@ def extract_session_id(text_or_url):
         from urllib.parse import unquote
         decoded_text = unquote(text_or_url)
         
-        # ၁။ sessionId ကို အရင်ရှာမည်
-        match = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", decoded_text)
-        if match: return match.group(1)
+        # ၁။ sessionId ကို အမျိုးမျိုးသောပုံစံဖြင့် ရှာဖွေခြင်း
+        patterns = [
+            r"[?&]sessionId=([a-zA-Z0-9_-]+)",
+            r"sessionId/([a-zA-Z0-9_-]+)",
+            r"[?&]gw_id=([a-zA-Z0-9_-]+)",
+            r"[?&]token=([a-zA-Z0-9_-]+)",
+            r"[?&]id=([a-zA-Z0-9_-]+)"
+        ]
         
-        match_orig = re.search(r"[?&]sessionId=([a-zA-Z0-9_-]+)", text_or_url)
-        if match_orig: return match_orig.group(1)
+        for pat in patterns:
+            match = re.search(pat, decoded_text)
+            if match: return match.group(1)
+            match_orig = re.search(pat, text_or_url)
+            if match_orig: return match_orig.group(1)
 
-        # ၂။ wifidog ပုံစံ URL များအတွက် gw_id သို့မဟုတ် token ကိုပါ ရှာပေးရန်
-        match_gw = re.search(r"[?&]gw_id=([a-zA-Z0-9_-]+)", decoded_text)
-        if match_gw: return match_gw.group(1)
-
-        match_token = re.search(r"[?&]token=([a-zA-Z0-9_-]+)", decoded_text)
-        if match_token: return match_token.group(1)
+        # ၂။ URL ထဲတွင် ပါဝင်သော ရှည်လျားသော ID သို့မဟုတ် Token များကိုပါ ရှာပေးရန်
+        if "http" in text_or_url:
+            parts = text_or_url.replace("?", "&").split("&")
+            for p in parts:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    if len(v) > 10 and k.lower() not in ['url', 'link', 'redirect']:
+                        return v.strip()
 
         clean_text = text_or_url.strip()
-        if len(clean_text) > 10 and not clean_text.startswith("http") and " " not in clean_text:
+        if len(clean_text) > 8 and not clean_text.startswith("http") and " " not in clean_text:
             return clean_text
         return None
     except Exception as e:
@@ -84,16 +94,21 @@ def extract_session_id(text_or_url):
 def login_voucher(session_id, voucher):
     data = {"accessCode": voucher, "sessionId": session_id, "apiVersion": 2}
     post_url = base64.b64decode(b'aHR0cHM6Ly9wb3J0YWwtYXMucnVpamllbmV0d29ya3MuY29tL2FwaS9hdXRoL3ZvdWNoZXIvP2xhbmc9ZW5fVVM=').decode()
+    
+    # 403 Forbidden မတက်စေရန် Browser ပုံစံ Headers အပြည့်အစုံသုံးခြင်း
     headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9",
         "content-type": "application/json",
-        "user-agent": 'Mozilla/5.0 (Linux; Android 12; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36',
+        "origin": "https://portal-as.ruijienetworks.com",
+        "referer": "https://portal-as.ruijienetworks.com/",
+        "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
     }
     try:
         with requests.post(post_url, json=data, headers=headers, timeout=10) as response:
             res_text = response.text
-            print(f"Server Response Debug: {res_text}") # Render logs တွင် စစ်ဆေးရန်
+            print(f"Server Response Debug: {res_text}")
             
-            # token ကို ရှာဖွေခြင်း
             token_match = re.search(r'token=(.*?)&', res_text)
             if token_match:
                 return token_match.group(1), None
@@ -103,7 +118,7 @@ def login_voucher(session_id, voucher):
                     if 'result' in res_json and isinstance(res_json['result'], dict):
                         token = res_json['result'].get('token') or res_json['result'].get('sessionId')
                         if token: return token, None
-                    # Error မက်ဆေ့ခ်ျအမှန်ကိုပါ ပြန်ယူရန်
+                    
                     error_msg = res_json.get('message') or res_json.get('msg') or res_text
                     return None, error_msg
                 except:
@@ -115,7 +130,9 @@ def login_voucher(session_id, voucher):
 def get_balance(active_session_id):
     headers = {
         'accept': 'application/json, text/javascript, */*; q=0.01',
-        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+        'accept-language': 'en-US,en;q=0.9',
+        'referer': 'https://portal-as.ruijienetworks.com/',
+        'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
     }
     try:
         response = requests.get(
@@ -191,7 +208,7 @@ def url_command(message):
         
     input_data = parts[1].strip()
     extracted_id = extract_session_id(input_data)
-    if not extracted_id and not input_data.startswith('http'):
+    if not extracted_id:
         bot.reply_to(message, "❌ **ERROR:** မှန်ကန်သော Session ID သို့မဟုတ် URL မဟုတ်ပါ။", parse_mode="Markdown")
         return
         
@@ -211,7 +228,7 @@ def testsession_command(message):
     if not is_allowed(chat_id): return
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
-        bot.reply_to(message, "⚠️ **Usage:** `/testsession [URL သို့မဟုတ် ID] [Voucher_Code]`\n\n*(ဥပမာ - `/testsession https://... ABC123`)*", parse_mode="Markdown")
+        bot.reply_to(message, "⚠️ **Usage:** `/testsession [URL သို့မဟုတ် ID] [Voucher_Code]`", parse_mode="Markdown")
         return
         
     url_input = parts[1].strip()
@@ -219,20 +236,8 @@ def testsession_command(message):
     
     status_msg = bot.reply_to(message, "⚡ `[████░░░░░░] Connecting to Server...`", parse_mode="Markdown")
     time.sleep(0.3)
-    try:
-        bot.edit_message_text("⚡ `[████████░░] Scanning Database & Token...`", chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
-    except: pass
 
     session_id = extract_session_id(url_input)
-    if not session_id and url_input.startswith('http'):
-        try:
-            resp = requests.get(url_input, timeout=5, allow_redirects=True)
-            session_id = extract_session_id(resp.url)
-            if not session_id:
-                m = re.search(r"sessionId=([a-zA-Z0-9_-]+)", resp.text)
-                if m: session_id = m.group(1)
-        except: pass
-
     if not session_id:
         bot.edit_message_text("❌ **ERROR:** Session ID ရှာမတွေ့ပါ။", chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
         return
@@ -243,7 +248,7 @@ def testsession_command(message):
             "╭━━━[ ❌ CHECK FAILED ]━━━╮\n"
             f"┃ 🎫 Voucher : `{voucher}`   ┃\n"
             f"┃ 📊 Status  : ❌ Invalid    ┃\n"
-            f"┃ 💬 Reason  : `{str(error)[:50]}` ┃\n"
+            f"┃ 💬 Reason  : `{str(error)[:40]}` ┃\n"
             "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
         )
         bot.edit_message_text(fail_res, chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
@@ -287,14 +292,6 @@ def getsession_command(message):
         return
     url_input = parts[1].strip()
     session_id = extract_session_id(url_input)
-    if not session_id and url_input.startswith('http'):
-        try:
-            resp = requests.get(url_input, timeout=5, allow_redirects=True)
-            session_id = extract_session_id(resp.url)
-            if not session_id:
-                m = re.search(r"sessionId=([a-zA-Z0-9_-]+)", resp.text)
-                if m: session_id = m.group(1)
-        except: pass
 
     if session_id:
         result_text = (
@@ -305,7 +302,7 @@ def getsession_command(message):
         )
         bot.reply_to(message, result_text, parse_mode="Markdown")
     else:
-        bot.reply_to(message, "❌ **ERROR:** ပေးထားသော URL ထဲမှ Session ID သို့မဟုတ် gw_id ရှာမတွေ့ပါ။", parse_mode="Markdown")
+        bot.reply_to(message, "❌ **ERROR:** ပေးထားသော URL ထဲမှ Session ID ရှာမတွေ့ပါ။", parse_mode="Markdown")
 
 @bot.message_handler(commands=['help'])
 def send_help(message):
@@ -409,7 +406,7 @@ def process_url_step(message):
     text_input = message.text.strip()
     if text_input.startswith('/'): return
     extracted_id = extract_session_id(text_input)
-    if not extracted_id and not text_input.startswith('http'):
+    if not extracted_id:
         msg = bot.reply_to(message, "⚠️ **ERROR:** မှန်ကန်သော Session URL သို့မဟုတ် Session ID ကို ပို့ပေးပါ။", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_url_step)
         return
@@ -435,20 +432,8 @@ def process_voucher_step(message):
 
     status_msg = bot.reply_to(message, "⚡ `[████░░░░░░] Connecting to Server...`", parse_mode="Markdown")
     time.sleep(0.3)
-    try:
-        bot.edit_message_text("⚡ `[████████░░] Scanning Database & Token...`", chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
-    except: pass
 
     session_id = extract_session_id(session_input)
-    if not session_id and session_input.startswith('http'):
-        try:
-            resp = requests.get(session_input, timeout=5, allow_redirects=True)
-            session_id = extract_session_id(resp.url)
-            if not session_id:
-                m = re.search(r"sessionId=([a-zA-Z0-9_-]+)", resp.text)
-                if m: session_id = m.group(1)
-        except: pass
-
     if not session_id:
         bot.edit_message_text("❌ **ERROR:** Session ID ရှာမတွေ့ပါ။", chat_id=chat_id, message_id=status_msg.message_id, parse_mode="Markdown")
         msg = bot.send_message(chat_id, "🔄 မှန်ကန်သော Session URL / ID အသစ် ပြန်ပို့ပါ:", parse_mode="Markdown")
@@ -461,7 +446,7 @@ def process_voucher_step(message):
             "╭━━━[ ❌ CHECK FAILED ]━━━╮\n"
             f"┃ 🎫 Voucher : `{voucher}`   ┃\n"
             f"┃ 📊 Status  : ❌ Invalid    ┃\n"
-            f"┃ 💬 Reason  : `{str(error)[:50]}` ┃\n"
+            f"┃ 💬 Reason  : `{str(error)[:40]}` ┃\n"
             "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
             "🔄 *နောက်ထပ် Voucher Code ကို ဆက်တိုက်ပို့နိုင်ပါတယ်။*"
         )
