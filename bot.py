@@ -1,6 +1,7 @@
 import telebot, asyncio, aiohttp, json, base64, random, re, os, string, time, uuid
 from telebot.async_telebot import AsyncTeleBot
-from aiohttp import web cv2
+from aiohttp import web
+import cv2
 import ddddocr
 import numpy as np
 from datetime import datetime, timedelta, timezone
