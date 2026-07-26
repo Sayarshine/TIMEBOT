@@ -26,9 +26,9 @@ limited_texts = {}
 captcha_state = {}
 session = None
 _connector = None
-CONCURRENCY = 200
-BATCH_SIZE = 2500
-TARGET_SPEED = 2500
+CONCURRENCY = 500
+BATCH_SIZE = 500
+TARGET_SPEED = 500
 _voucher_sem = None
 _start_time = time.monotonic()
 
